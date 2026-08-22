@@ -1,4 +1,4 @@
-# @share-html/mcp-server
+# @aiformasses/mcp-server
 
 Publish safe static HTML pages from an MCP agent and receive a shareable URL.
 
@@ -39,7 +39,7 @@ server from Codex settings. The first start downloads the pinned package through
 ```toml
 [mcp_servers."share-html"]
 command = "npx"
-args = ["-y", "@share-html/mcp-server@0.1.0"]
+args = ["-y", "@aiformasses/mcp-server@0.1.0"]
 
 [mcp_servers."share-html".env]
 SHARE_HTML_API_BASE_URL = "https://share-html-app-alpha.vercel.app/api/v1"
@@ -53,7 +53,7 @@ SHARE_HTML_API_TOKEN = "shp_..."
   "mcpServers": {
     "share-html": {
       "command": "npx",
-      "args": ["-y", "@share-html/mcp-server@0.1.0"],
+      "args": ["-y", "@aiformasses/mcp-server@0.1.0"],
       "env": {
         "SHARE_HTML_API_BASE_URL": "https://share-html-app-alpha.vercel.app/api/v1",
         "SHARE_HTML_API_TOKEN": "shp_..."

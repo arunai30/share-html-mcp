@@ -156,8 +156,8 @@ try {
   writeFileSync(
     path.join(consumerCwd, "consumer.ts"),
     [
-      'import { createShareHtmlServer, type PageOperations } from "@share-html/mcp-server";',
-      'import { ShareHtmlApiClient, ShareHtmlApiError } from "@share-html/mcp-server/client";',
+      'import { createShareHtmlServer, type PageOperations } from "@aiformasses/mcp-server";',
+      'import { ShareHtmlApiClient, ShareHtmlApiError } from "@aiformasses/mcp-server/client";',
       "declare const operations: PageOperations;",
       "createShareHtmlServer(operations);",
       'new ShareHtmlApiClient("https://api.example.com/api/v1", "shp_example");',
@@ -184,7 +184,7 @@ try {
     [
       "--input-type=module",
       "--eval",
-      'await import("@share-html/mcp-server"); await import("@share-html/mcp-server/client");',
+      'await import("@aiformasses/mcp-server"); await import("@aiformasses/mcp-server/client");',
     ],
     { cwd: consumerCwd, env: releaseEnvironment() },
   );
