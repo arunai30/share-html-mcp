@@ -1,0 +1,64 @@
+{
+  "name": "@share-html/mcp-server",
+  "version": "0.1.0",
+  "description": "Publish safe static HTML pages through MCP.",
+  "keywords": [
+    "ai-agents",
+    "html",
+    "mcp",
+    "model-context-protocol",
+    "static-publishing"
+  ],
+  "homepage": "https://github.com/arunai30/share-html-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/arunai30/share-html-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arunai30/share-html-mcp.git"
+  },
+  "type": "module",
+  "bin": {
+    "share-html-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./client": {
+      "types": "./dist/api-client.d.ts",
+      "import": "./dist/api-client.js"
+    }
+  },
+  "scripts": {
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepack": "npm run build && node scripts/package-check.mjs",
+    "test:release": "node scripts/release-check.mjs",
+    "test:cli": "npm run build && node scripts/cli-config.mjs",
+    "test:contract": "npm run build && node scripts/contract.mjs",
+    "test:mock": "npm run build && node scripts/mock-integration.mjs",
+    "test:public": "npm run test:contract && npm run test:cli && npm run test:mock"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}
