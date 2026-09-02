@@ -12,6 +12,31 @@ const packageCwd = process.env.SHARE_HTML_TEST_MCP_CWD;
 const token = "shp_mock_token_that_must_not_be_logged";
 let tokenActive = true;
 let page = null;
+let sharing = null;
+const archivePages = Array.from({ length: 125 }, (_, index) => ({
+  artifactType: "document",
+  artifactSchemaVersion: 1,
+  artifactMetadata: {},
+  pageId: `p_archive_${String(index).padStart(3, "0")}`,
+  title: `Archive report ${String(index).padStart(3, "0")}`,
+  status: index % 5 === 0 ? "unpublished" : "published",
+  publicUrl: `https://app.example/view/p_archive_${String(index).padStart(3, "0")}`,
+  createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+  updatedAt: new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
+})).reverse();
+const recipe = {
+  kind: "recipe",
+  schemaVersion: 1,
+  recipeId: "animated-meme",
+  version: 1,
+  contentSha256: "a".repeat(64),
+  title: "Animated Meme",
+  summary: "A safe animated meme recipe.",
+  prompt: "Build a static animated meme.",
+  starterHtml: "<!doctype html><html><body><h1>Animated meme</h1></body></html>",
+  rules: ["No JavaScript."],
+  qualityChecklist: ["The punchline is readable."],
+};
 
 function childEnvironment(extra = {}) {
   const allowedKeys = [
@@ -51,6 +76,52 @@ async function readJson(request) {
 }
 
 const api = createServer(async (request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/api/v1/recipes") {
+    assert.equal(request.headers.authorization, undefined);
+    sendJson(response, 200, {
+      kind: "recipe_catalog",
+      schemaVersion: 1,
+      recipes: [
+        {
+          recipeId: recipe.recipeId,
+          title: recipe.title,
+          summary: recipe.summary,
+          availableVersions: [1],
+          latestVersion: 1,
+          latestContentSha256: recipe.contentSha256,
+        },
+      ],
+    });
+    return;
+  }
+  const recipeMatch = url.pathname.match(/^\/api\/v1\/recipes\/([^/]+)$/);
+  if (request.method === "GET" && recipeMatch) {
+    assert.equal(request.headers.authorization, undefined);
+    if (recipeMatch[1] !== "animated-meme") {
+      sendJson(response, 404, {
+        error: {
+          code: "recipe_not_found",
+          message:
+            "Recipe not found. Call get_recipe with no arguments to rediscover the catalog.",
+        },
+      });
+      return;
+    }
+    if (url.searchParams.has("version") && url.searchParams.get("version") !== "1") {
+      sendJson(response, 404, {
+        error: {
+          code: "recipe_version_not_found",
+          message:
+            "Recipe version not found. Available versions: [1]. Latest version: 1; omit version to get the latest.",
+        },
+      });
+      return;
+    }
+    sendJson(response, 200, recipe);
+    return;
+  }
+
   if (!tokenActive || request.headers.authorization !== `Bearer ${token}`) {
     sendJson(response, 401, {
       error: { code: "invalid_api_token", message: "The API token is invalid." },
@@ -58,27 +129,146 @@ const api = createServer(async (request, response) => {
     return;
   }
 
-  const url = new URL(request.url, "http://127.0.0.1");
   const pageMatch = url.pathname.match(/^\/api\/v1\/pages\/([^/]+)$/);
   const actionMatch = url.pathname.match(
     /^\/api\/v1\/pages\/([^/]+)\/(publish|unpublish)$/,
   );
+  const sharingMatch = url.pathname.match(/^\/api\/v1\/pages\/([^/]+)\/sharing$/);
+  const sessionsMatch = url.pathname.match(/^\/api\/v1\/pages\/([^/]+)\/sharing\/sessions$/);
 
   if (request.method === "GET" && url.pathname === "/api/v1/pages") {
-    sendJson(response, 200, { pages: page ? [page] : [] });
+    const query = url.searchParams.get("query")?.trim().toLowerCase();
+    const status = url.searchParams.get("status");
+    const limit = Number(url.searchParams.get("limit") ?? "25");
+    const cursor = url.searchParams.get("cursor");
+    const offset = cursor ? Number(cursor.replace(/^cursor_/, "")) : 0;
+    const library = [...(page ? [page] : []), ...archivePages].filter(
+      (candidate) =>
+        (!query ||
+          candidate.title.toLowerCase().includes(query) ||
+          candidate.pageId.toLowerCase().includes(query)) &&
+        (!status ||
+          candidate.status === status ||
+          (status === "unpublished" && candidate.status === "taken_down")),
+    );
+    const pages = library.slice(offset, offset + limit).map((candidate) => ({
+      artifactType: candidate.artifactType,
+      artifactSchemaVersion: candidate.artifactSchemaVersion,
+      artifactMetadata: candidate.artifactMetadata,
+      pageId: candidate.pageId,
+      title: candidate.title,
+      status: candidate.status,
+      publicUrl: candidate.publicUrl,
+      createdAt: candidate.createdAt,
+      updatedAt: candidate.updatedAt,
+    }));
+    const nextOffset = offset + pages.length;
+    sendJson(response, 200, {
+      pages,
+      pageInfo: {
+        limit,
+        resultCount: pages.length,
+        matchingCount: library.length,
+        totalLibraryCount: archivePages.length + (page ? 1 : 0),
+        nextCursor: nextOffset < library.length ? `cursor_${nextOffset}` : null,
+        previousCursor: offset > 0 ? `cursor_${Math.max(0, offset - limit)}` : null,
+      },
+    });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/v1/pages") {
     const input = await readJson(request);
     page = {
+      artifactType: "document",
+      artifactSchemaVersion: 1,
+      artifactMetadata: {},
       pageId: "p_mock",
       title: input.title ?? null,
       status: "published",
       version: 1,
-      publicUrl: "https://pages.example/p/p_mock",
+      publicUrl: "https://app.example/view/p_mock",
+      createdAt: "2026-08-27T12:00:00.000Z",
+      updatedAt: "2026-08-27T12:00:00.000Z",
+    };
+    sharing = {
+      pageId: "p_mock",
+      publicUrl: page.publicUrl,
+      mode: "private",
+      revision: 1,
+      expiresAt: null,
+      hasPassword: false,
+      recipients: [],
+      emailDomain: null,
     };
     sendJson(response, 201, page);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v1/presentations") {
+    const input = await readJson(request);
+    assert.deepEqual(input.presentation, {
+      schemaVersion: 1,
+      aspectRatio: "16:9",
+    });
+    page = {
+      artifactSchemaVersion: 1,
+      pageId: "p_mock_deck",
+      title: input.title ?? null,
+      status: "published",
+      version: 1,
+      artifactType: "presentation",
+      artifactMetadata: {
+        aspectRatio: "16:9",
+        slideCount: 7,
+      },
+      publicUrl: "https://app.example/view/p_mock_deck",
+      contentSha256: "b".repeat(64),
+      createdAt: "2026-08-27T12:00:00.000Z",
+      updatedAt: "2026-08-27T12:00:00.000Z",
+    };
+    sharing = {
+      pageId: page.pageId,
+      publicUrl: page.publicUrl,
+      mode: "private",
+      revision: 1,
+      expiresAt: null,
+      hasPassword: false,
+      recipients: [],
+      emailDomain: null,
+    };
+    sendJson(response, 201, page);
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/api/v1/pages/controlled"
+  ) {
+    const input = await readJson(request);
+    page = {
+      artifactType: "document",
+      artifactSchemaVersion: 1,
+      artifactMetadata: {},
+      pageId: "p_mock_controlled",
+      title: input.title ?? null,
+      status: "published",
+      version: 1,
+      publicUrl: "https://app.example/view/p_mock_controlled",
+      createdAt: "2026-08-27T12:00:00.000Z",
+      updatedAt: "2026-08-27T12:00:00.000Z",
+    };
+    sharing = {
+      pageId: page.pageId,
+      publicUrl: page.publicUrl,
+      mode: input.sharing.mode,
+      revision: 2,
+      expiresAt: input.sharing.expiresAt ?? null,
+      hasPassword: Boolean(input.sharing.methods?.password),
+      recipients: input.sharing.methods?.recipients ?? [],
+      emailDomain: input.sharing.methods?.emailDomain ?? null,
+    };
+    sendJson(response, 201, { ...page, sharing });
     return;
   }
 
@@ -105,11 +295,61 @@ const api = createServer(async (request, response) => {
   }
 
   if (actionMatch && actionMatch[1] === page?.pageId && request.method === "POST") {
+    if (actionMatch[2] === "publish" && page.status === "taken_down") {
+      sendJson(response, 409, {
+        error: {
+          code: "page_taken_down",
+          message:
+            "This artifact was taken down by the platform and cannot be published.",
+        },
+      });
+      return;
+    }
     page = {
       ...page,
       status: actionMatch[2] === "publish" ? "published" : "unpublished",
     };
     sendJson(response, 200, page);
+    return;
+  }
+
+  if (sharingMatch && sharingMatch[1] === page?.pageId) {
+    if (request.method === "GET") {
+      sendJson(response, 200, sharing);
+      return;
+    }
+    if (request.method === "PUT") {
+      const input = await readJson(request);
+      if (input.expectedRevision !== sharing.revision) {
+        sendJson(response, 409, {
+          error: { code: "sharing_conflict", message: "Sharing changed elsewhere." },
+        });
+        return;
+      }
+      sharing = {
+        ...sharing,
+        mode: input.policy.mode,
+        revision: sharing.revision + 1,
+        expiresAt: input.policy.expiresAt ?? null,
+        hasPassword: Boolean(input.policy.methods?.password),
+        recipients: input.policy.methods?.recipients ?? [],
+        emailDomain: input.policy.methods?.emailDomain ?? null,
+      };
+      sendJson(response, 200, sharing);
+      return;
+    }
+  }
+
+  if (sessionsMatch && sessionsMatch[1] === page?.pageId && request.method === "DELETE") {
+    const input = await readJson(request);
+    if (input.expectedRevision !== sharing.revision) {
+      sendJson(response, 409, {
+        error: { code: "sharing_conflict", message: "Sharing changed elsewhere." },
+      });
+      return;
+    }
+    sharing = { ...sharing, revision: sharing.revision + 1 };
+    sendJson(response, 200, sharing);
     return;
   }
 
@@ -149,14 +389,82 @@ try {
     tools.tools.map((tool) => tool.name).sort(),
     [
       "delete_page",
+      "end_current_viewing_sessions",
       "get_page",
+      "get_page_sharing",
+      "get_recipe",
       "list_pages",
       "publish_html",
       "publish_page",
+      "publish_presentation",
+      "set_page_sharing",
       "unpublish_page",
       "update_page",
     ],
   );
+
+  const catalog = value(
+    await client.callTool({ name: "get_recipe", arguments: {} }),
+  );
+  assert.equal(catalog.kind, "recipe_catalog");
+  assert.equal(catalog.recipes[0].recipeId, "animated-meme");
+
+  const latestRecipe = value(
+    await client.callTool({
+      name: "get_recipe",
+      arguments: { recipeId: "animated-meme" },
+    }),
+  );
+  const pinnedRecipe = value(
+    await client.callTool({
+      name: "get_recipe",
+      arguments: { recipeId: "animated-meme", version: 1 },
+    }),
+  );
+  assert.deepEqual(latestRecipe, pinnedRecipe);
+  assert.equal(pinnedRecipe.contentSha256.length, 64);
+
+  const missingRecipeVersion = await client.callTool({
+    name: "get_recipe",
+    arguments: { recipeId: "animated-meme", version: 2 },
+  });
+  assert.equal(missingRecipeVersion.isError, true);
+  assert.match(
+    missingRecipeVersion.content?.[0]?.text ?? "",
+    /available versions.*omit version/i,
+  );
+
+  const missingRecipe = await client.callTool({
+    name: "get_recipe",
+    arguments: { recipeId: "unknown-recipe" },
+  });
+  assert.equal(missingRecipe.isError, true);
+  assert.match(
+    missingRecipe.content?.[0]?.text ?? "",
+    /call get_recipe with no arguments/i,
+  );
+
+  const invalidRecipeInput = await client.callTool({
+    name: "get_recipe",
+    arguments: { version: 1 },
+  });
+  assert.equal(invalidRecipeInput.isError, true);
+
+  const presentation = value(
+    await client.callTool({
+      name: "publish_presentation",
+      arguments: {
+        title: "Mock deck",
+        html: '<main class="share-presentation"></main>',
+      },
+    }),
+  );
+  assert.equal(presentation.artifactType, "presentation");
+  assert.equal(
+    presentation.publicUrl,
+    "https://app.example/view/p_mock_deck",
+  );
+  assert.equal(presentation.contentSha256.length, 64);
 
   const published = value(
     await client.callTool({
@@ -168,7 +476,31 @@ try {
   assert.equal(published.version, 1);
 
   const listed = value(await client.callTool({ name: "list_pages", arguments: {} }));
-  assert.equal(listed.pages.length, 1);
+  assert.equal(listed.pages.length, 25);
+  assert.equal(listed.pageInfo.totalLibraryCount, 126);
+  assert.ok(listed.pages.some((candidate) => candidate.pageId === published.pageId));
+  const searched = value(
+    await client.callTool({
+      name: "list_pages",
+      arguments: { query: "Archive report 119", status: "published", limit: 10 },
+    }),
+  );
+  assert.equal(searched.pages.length, 1);
+  assert.equal(searched.pages[0].pageId, "p_archive_119");
+  const traversed = [];
+  let cursor;
+  do {
+    const batch = value(
+      await client.callTool({
+        name: "list_pages",
+        arguments: { limit: 40, ...(cursor ? { cursor } : {}) },
+      }),
+    );
+    traversed.push(...batch.pages.map((candidate) => candidate.pageId));
+    cursor = batch.pageInfo.nextCursor ?? undefined;
+  } while (cursor);
+  assert.equal(traversed.length, 126);
+  assert.equal(new Set(traversed).size, 126);
   assert.equal(
     value(
       await client.callTool({
@@ -187,6 +519,47 @@ try {
   );
   assert.equal(updated.version, 2);
 
+  const initialSharing = value(
+    await client.callTool({
+      name: "get_page_sharing",
+      arguments: { pageId: published.pageId },
+    }),
+  );
+  const passwordSharing = value(
+    await client.callTool({
+      name: "set_page_sharing",
+      arguments: {
+        pageId: published.pageId,
+        expectedRevision: initialSharing.revision,
+        policy: {
+          mode: "restricted",
+          methods: {
+            password: { action: "set", value: "mock-private-password" },
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(passwordSharing.mode, "restricted");
+  const stale = await client.callTool({
+    name: "set_page_sharing",
+    arguments: {
+      pageId: published.pageId,
+      expectedRevision: initialSharing.revision,
+      policy: { mode: "public" },
+    },
+  });
+  assert.equal(stale.isError, true);
+  assert.equal(value({ ...stale, isError: undefined }).error.code, "sharing_conflict");
+
+  assert.equal(
+    value(await client.callTool({
+      name: "end_current_viewing_sessions",
+      arguments: { pageId: published.pageId, expectedRevision: passwordSharing.revision },
+    })).revision,
+    passwordSharing.revision + 1,
+  );
+
   const unpublished = value(
     await client.callTool({
       name: "unpublish_page",
@@ -203,6 +576,25 @@ try {
   );
   assert.equal(republished.status, "published");
 
+  page = { ...page, status: "taken_down" };
+  const heldList = value(
+    await client.callTool({
+      name: "list_pages",
+      arguments: { status: "unpublished", query: published.pageId },
+    }),
+  );
+  assert.equal(heldList.pages.length, 1);
+  assert.equal(heldList.pages[0].status, "taken_down");
+  const blockedRepublish = await client.callTool({
+    name: "publish_page",
+    arguments: { pageId: published.pageId },
+  });
+  assert.equal(blockedRepublish.isError, true);
+  assert.equal(
+    value({ ...blockedRepublish, isError: undefined }).error.code,
+    "page_taken_down",
+  );
+
   assert.equal(
     value(
       await client.callTool({
@@ -213,13 +605,38 @@ try {
     true,
   );
 
+  const controlled = value(
+    await client.callTool({
+      name: "publish_html",
+      arguments: {
+        title: "Private report",
+        html: "<h1>Private report</h1>",
+        sharing: {
+          mode: "restricted",
+          methods: {
+            emailDomain: "example.com",
+            recipients: ["reader@example.com"],
+          },
+          expiresAt: "2027-01-01T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+  assert.equal(controlled.pageId, "p_mock_controlled");
+  assert.equal(controlled.sharing.mode, "restricted");
+  assert.equal(controlled.sharing.emailDomain, "example.com");
+  assert.equal(controlled.sharing.revision, 2);
+  assert.deepEqual(controlled.sharing.recipients, ["reader@example.com"]);
+
   tokenActive = false;
   const rejected = await client.callTool({ name: "list_pages", arguments: {} });
   assert.equal(rejected.isError, true);
   assert.match(rejected.content?.[0]?.text ?? "", /invalid/i);
   assert.doesNotMatch(rejected.content?.[0]?.text ?? "", new RegExp(token));
 
-  console.log("Public MCP integration passed: seven tools and safe auth failure.");
+  console.log(
+    "Public MCP integration passed: twelve tools, presentations, sharing parity, recipes, and safe auth failure.",
+  );
 } finally {
   await client.close().catch(() => undefined);
   await new Promise((resolve, reject) =>

@@ -156,11 +156,14 @@ try {
   writeFileSync(
     path.join(consumerCwd, "consumer.ts"),
     [
-      'import { createShareHtmlServer, type PageOperations } from "@aiformasses/mcp-server";',
+      'import { createShareHtmlServer, type InitialSharingPolicyInput, type ShareHtmlOperations } from "@aiformasses/mcp-server";',
       'import { ShareHtmlApiClient, ShareHtmlApiError } from "@aiformasses/mcp-server/client";',
-      "declare const operations: PageOperations;",
+      "declare const operations: ShareHtmlOperations;",
       "createShareHtmlServer(operations);",
-      'new ShareHtmlApiClient("https://api.example.com/api/v1", "shp_example");',
+      'const client = new ShareHtmlApiClient("https://api.example.com/api/v1", "shp_example");',
+      "void client.getRecipe({ recipeId: \"animated-meme\", version: 1 });",
+      'const sharing: InitialSharingPolicyInput = { mode: "restricted", methods: { password: { action: "set", value: "private-password" } } };',
+      'void client.publishPage({ html: "<h1>Private</h1>", sharing });',
       "const error: ShareHtmlApiError | undefined = undefined;",
       "void error;",
     ].join("\n"),

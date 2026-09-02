@@ -1,9 +1,10 @@
 {
   "name": "@aiformasses/mcp-server",
-  "version": "0.1.0",
-  "description": "Publish safe static HTML pages through MCP.",
+  "version": "0.2.0",
+  "description": "Publish agent-created HTML artifacts through MCP.",
   "keywords": [
     "ai-agents",
+    "artifacts",
     "html",
     "mcp",
     "model-context-protocol",

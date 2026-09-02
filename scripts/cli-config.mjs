@@ -59,7 +59,48 @@ assert.throws(
 const fixture = createServer((request, response) => {
   response.setHeader("content-type", "application/json");
   if (request.url === "/success/pages") {
-    response.end(JSON.stringify({ pages: [] }));
+    response.end(JSON.stringify({ pages: [], pageInfo: { nextCursor: null } }));
+    return;
+  }
+  if (
+    request.url ===
+    "/success/pages?query=Launch&status=unpublished&limit=40&cursor=next-page"
+  ) {
+    response.end(
+      JSON.stringify({ pages: [], pageInfo: { nextCursor: "final-page" } }),
+    );
+    return;
+  }
+  if (request.url === "/success/recipes") {
+    assert.equal(request.headers.authorization, undefined);
+    response.end(
+      JSON.stringify({ kind: "recipe_catalog", schemaVersion: 1, recipes: [] }),
+    );
+    return;
+  }
+  if (request.url === "/success/recipes/animated-meme?version=1") {
+    assert.equal(request.headers.authorization, undefined);
+    response.end(
+      JSON.stringify({
+        kind: "recipe",
+        schemaVersion: 1,
+        recipeId: "animated-meme",
+        version: 1,
+      }),
+    );
+    return;
+  }
+  if (request.url === "/success/recipes?version=1") {
+    assert.equal(request.headers.authorization, undefined);
+    response.statusCode = 400;
+    response.end(
+      JSON.stringify({
+        error: {
+          code: "invalid_recipe_request",
+          message: "version requires a recipeId.",
+        },
+      }),
+    );
     return;
   }
   if (request.url === "/client-error/pages") {
@@ -104,6 +145,30 @@ const fixture = createServer((request, response) => {
     setTimeout(() => response.end("[]}"), 100);
     return;
   }
+  if (request.url === "/recipe-timeout/recipes") {
+    setTimeout(
+      () =>
+        response.end(
+          JSON.stringify({
+            kind: "recipe_catalog",
+            schemaVersion: 1,
+            recipes: [],
+          }),
+        ),
+      100,
+    );
+    return;
+  }
+  if (request.url === "/oversized/recipes") {
+    response.setHeader("content-length", "2500001");
+    response.end("{}");
+    return;
+  }
+  if (request.url === "/chunked-oversized/recipes") {
+    response.write(" ".repeat(1_300_000));
+    response.end(" ".repeat(1_300_000));
+    return;
+  }
   response.statusCode = 404;
   response.end(JSON.stringify({ error: { code: "not_found" } }));
 });
@@ -116,7 +181,44 @@ const fixtureOrigin = `http://127.0.0.1:${address.port}`;
 try {
   assert.deepEqual(
     await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).listPages(),
-    { pages: [] },
+    { pages: [], pageInfo: { nextCursor: null } },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).listPages({
+      query: "Launch",
+      status: "unpublished",
+      limit: 40,
+      cursor: "next-page",
+    }),
+    { pages: [], pageInfo: { nextCursor: "final-page" } },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).getRecipe({}),
+    { kind: "recipe_catalog", schemaVersion: 1, recipes: [] },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).getRecipe({
+      recipeId: "animated-meme",
+      version: 1,
+    }),
+    {
+      kind: "recipe",
+      schemaVersion: 1,
+      recipeId: "animated-meme",
+      version: 1,
+    },
+  );
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).getRecipe({
+      version: 1,
+    }),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "invalid_recipe_request");
+      assert.equal(error.status, 400);
+      assert.match(error.message, /requires a recipeId/i);
+      return true;
+    },
   );
 
   await assert.rejects(
@@ -138,6 +240,7 @@ try {
       assert.ok(error instanceof ShareHtmlApiError);
       assert.equal(error.code, "http_error");
       assert.equal(error.status, 500);
+      assert.match(error.message, /share\/artifacts API is unavailable/);
       assert.doesNotMatch(error.message, /diagnostic|database|shp_/i);
       return true;
     },
@@ -168,7 +271,9 @@ try {
     (error) => {
       assert.ok(error instanceof ShareHtmlApiError);
       assert.equal(error.code, "request_timeout");
-      assert.match(error.message, /may have completed/i);
+      assert.match(error.message, /share\/artifacts request timed out/);
+      assert.match(error.message, /safe to retry list_pages/i);
+      assert.doesNotMatch(error.message, /may have completed/i);
       return true;
     },
   );
@@ -180,6 +285,54 @@ try {
     (error) => {
       assert.ok(error instanceof ShareHtmlApiError);
       assert.equal(error.code, "request_timeout");
+      assert.match(error.message, /safe to retry list_pages/i);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/recipe-timeout`, secret, {
+      timeoutMs: 10,
+    }).getRecipe({}),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "request_timeout");
+      assert.match(error.message, /safe to retry get_recipe/i);
+      assert.doesNotMatch(error.message, /may have completed/i);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/oversized`, secret).getRecipe({}),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "invalid_response");
+      assert.match(error.message, /too large/i);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/chunked-oversized`, secret).getRecipe(
+      {},
+    ),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "invalid_response");
+      assert.match(error.message, /too large/i);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).getRecipe({
+      recipeId: "",
+    }),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "invalid_recipe_request");
+      assert.equal(error.status, 400);
       return true;
     },
   );
@@ -196,6 +349,7 @@ await assert.rejects(
   (error) => {
     assert.ok(error instanceof ShareHtmlApiError);
     assert.equal(error.code, "network_error");
+    assert.match(error.message, /share\/artifacts API/);
     assert.doesNotMatch(error.message, new RegExp(secret));
     return true;
   },
