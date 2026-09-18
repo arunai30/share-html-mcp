@@ -1,0 +1,19 @@
+{
+  "name": "share-artifacts",
+  "version": "1.0.0",
+  "description": "Publish HTML reports, explainers, and presentations to shareable URLs, then update them in place and control access.",
+  "author": {
+    "name": "share/artifacts"
+  },
+  "homepage": "https://shareartifacts.dev",
+  "repository": "https://github.com/arunai30/share-html-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "html",
+    "publishing",
+    "presentations",
+    "artifacts"
+  ],
+  "mcpServers": "mcp.json"
+}

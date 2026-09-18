@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "share-artifacts": {
+      "url": "https://shareartifacts.dev/api/mcp",
+      "auth": {
+        "CLIENT_ID": "53f91130-7752-4e99-9667-7a6dffdab529",
+        "scopes": [
+          "pages:read",
+          "pages:write",
+          "styles:read",
+          "styles:write",
+          "offline_access"
+        ]
+      }
+    }
+  }
+}

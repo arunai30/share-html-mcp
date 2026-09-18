@@ -11,6 +11,64 @@ remote MCP, browser authorization, and CIMD or DCR can configure the hosted conn
 at `https://shareartifacts.dev/api/mcp` without installing this package or
 creating a permanent token.
 
+## Cursor: hosted OAuth connection
+
+This repository includes a Cursor plugin at `.cursor-plugin/plugin.json`.
+Its `mcp.json` connects directly to the hosted service; no npm install or
+personal access token is required. Each user signs in to their own
+share/artifacts account and approves access in the browser.
+
+For manual setup, merge this configuration into your project's
+`.cursor/mcp.json` (preserve any other servers):
+
+```json
+{
+  "mcpServers": {
+    "share-artifacts": {
+      "url": "https://shareartifacts.dev/api/mcp",
+      "auth": {
+        "CLIENT_ID": "53f91130-7752-4e99-9667-7a6dffdab529",
+        "scopes": [
+          "pages:read",
+          "pages:write",
+          "styles:read",
+          "styles:write",
+          "offline_access"
+        ]
+      }
+    }
+  }
+}
+```
+
+The client ID is public and grants no account access by itself. Do not add a
+client secret. When connecting, the consent page identifies the pre-registered
+Cursor configuration and warns that the requesting local app is not verified.
+Approve only a connection you just started. The desktop callback is exactly
+`http://localhost:8787/callback`; the registered web callback is
+`https://www.cursor.com/agents/mcp/oauth/callback`.
+
+With [Cursor CLI installed](https://cursor.com/docs/cli/installation), run from
+the configured project:
+
+```sh
+agent mcp enable share-artifacts
+agent mcp login share-artifacts
+agent mcp list-tools share-artifacts
+```
+
+Complete browser sign-in and consent when prompted. If you cancel, run login
+again when ready. Ask the agent to publish an HTML artifact, inspect the returned
+URL, and specify public sharing explicitly if you want anyone with the link to
+open it. Publishing defaults to private. A free account includes five successful
+publishes or updates in total.
+
+Verified on September 17, 2026 with Cursor CLI `2026.09.15-d2fe57e`: production
+OAuth sign-in, consent, and authenticated discovery of all 15 hosted tools.
+The plugin installation flow, desktop editor, and Cursor web agent have not
+been independently verified; use the manual configuration above for the tested
+CLI path.
+
 ## Personal-token fallback
 
 Use this package when your MCP client does not support the hosted OAuth flow.
