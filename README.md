@@ -65,9 +65,11 @@ publishes or updates in total.
 
 Verified on September 17, 2026 with Cursor CLI `2026.09.15-d2fe57e`: production
 OAuth sign-in, consent, and authenticated discovery of all 15 hosted tools.
-The plugin installation flow, desktop editor, and Cursor web agent have not
-been independently verified; use the manual configuration above for the tested
-CLI path.
+The maintainer also confirmed the local plugin works in Cursor CLI. For a
+plugin connection that needs authentication, enter `/mcp list` inside the
+interactive CLI, select Share Artifacts, and choose Login in its detail view.
+Complete browser consent, then return to the agent. The desktop editor and
+Cursor web agent have not been independently verified.
 
 ## Personal-token fallback
 
