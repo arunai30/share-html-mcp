@@ -1,0 +1,200 @@
+{
+  "title": "Artifact Style V1",
+  "description": "Provider-neutral, non-executable semantic style definition. The server additionally enforces prose safety, canonical normalization, semantic pairing roles, WCAG AA contrast, uniqueness, and an 8 KB serialized limit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schemaVersion",
+    "name",
+    "summary",
+    "palette",
+    "textPairings",
+    "typography",
+    "composition",
+    "dataVisualization",
+    "voice",
+    "motion",
+    "signatures",
+    "avoid",
+    "formatAdaptation"
+  ],
+  "properties": {
+    "kind": { "const": "artifact_style" },
+    "schemaVersion": { "const": 1 },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "description": "Display name only; no markup, URL, CSS, control, bidi, or executable instruction text."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 280,
+      "description": "One bounded aesthetic direction; no markup, URL, CSS, control, bidi, or executable instruction text."
+    },
+    "palette": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canvas", "surface", "ink", "muted", "emphasis", "attention", "comparison", "context"],
+      "properties": {
+        "canvas": { "$ref": "#/$defs/color" },
+        "surface": { "$ref": "#/$defs/color" },
+        "ink": { "$ref": "#/$defs/color" },
+        "muted": { "$ref": "#/$defs/color" },
+        "emphasis": { "$ref": "#/$defs/color" },
+        "attention": { "$ref": "#/$defs/color" },
+        "comparison": { "$ref": "#/$defs/color" },
+        "context": { "$ref": "#/$defs/color" }
+      }
+    },
+    "textPairings": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "description": "Exactly one server-validated semantic, WCAG AA pairing for every declared use.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["foreground", "background", "use"],
+        "properties": {
+          "foreground": { "$ref": "#/$defs/paletteRole" },
+          "background": { "$ref": "#/$defs/paletteRole" },
+          "use": {
+            "enum": [
+              "Body copy",
+              "Surface copy",
+              "Secondary copy",
+              "Emphasis-block copy",
+              "Attention-block copy",
+              "Comparison-block copy",
+              "Context-block copy"
+            ]
+          }
+        }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display", "body", "editorial", "label", "displayScale", "labelTreatment"],
+      "properties": {
+        "display": { "enum": ["system-sans-black", "system-sans", "system-serif", "system-mono", "system-rounded"] },
+        "body": { "enum": ["system-sans", "system-serif", "system-mono", "system-rounded"] },
+        "editorial": { "enum": ["system-sans", "system-serif", "system-mono", "system-rounded"] },
+        "label": { "enum": ["system-sans", "system-serif", "system-mono"] },
+        "displayScale": { "enum": ["restrained", "prominent", "oversized"] },
+        "labelTreatment": { "enum": ["sentence-case", "uppercase", "uppercase-tracked", "compact-mono"] }
+      }
+    },
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["density", "grid", "rules", "corners", "whitespace", "sectionRhythm"],
+      "properties": {
+        "density": { "enum": ["compact", "balanced", "airy"] },
+        "grid": { "enum": ["single-column", "modular", "symmetric", "asymmetric"] },
+        "rules": { "enum": ["none", "subtle", "one-pixel-ink", "bold-separators"] },
+        "corners": { "enum": ["square", "soft", "rounded", "mixed-intentional"] },
+        "whitespace": { "enum": ["compact", "balanced", "generous"] },
+        "sectionRhythm": { "enum": ["continuous", "stacked-modules", "editorial-chapters"] }
+      }
+    },
+    "dataVisualization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hierarchy", "values", "charts", "color", "caveats"],
+      "properties": {
+        "hierarchy": { "enum": ["finding-before-metrics", "metrics-before-analysis", "balanced"] },
+        "values": { "enum": ["always-visible", "decision-values-visible", "summary-and-detail"] },
+        "charts": { "enum": ["html-css-geometry", "tables-first", "minimal-bars"] },
+        "color": { "enum": ["signal-not-decoration", "categorical-with-labels", "monochrome-with-accent"] },
+        "caveats": { "enum": ["adjacent-to-evidence", "section-footnotes", "method-panel"] }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tone", "headlines", "sentences", "jargon"],
+      "properties": {
+        "tone": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["decisive", "analytical", "humane", "lightly-playful", "calm", "direct", "warm", "formal", "optimistic", "technical", "restrained"] }
+        },
+        "headlines": { "enum": ["claim-led", "topic-led", "question-led"] },
+        "sentences": { "enum": ["concise", "varied", "measured"] },
+        "jargon": { "enum": ["plain-language-first", "domain-precise", "minimal"] }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "loops", "reducedMotion"],
+      "properties": {
+        "policy": { "enum": ["static-only", "purposeful-css-only"] },
+        "loops": { "const": "avoid-ambient-loops" },
+        "reducedMotion": { "const": "required" }
+      }
+    },
+    "signatures": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": { "enum": ["one-oversized-finding", "numbered-editorial-sections", "hard-ink-rules", "visible-data-values", "high-chroma-signal-blocks", "quiet-monochrome-fields", "serif-editorial-accents", "compact-metric-strip", "annotated-evidence", "asymmetric-callouts", "full-bleed-section-breaks", "structured-side-notes"] }
+    },
+    "avoid": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "enum": ["glassmorphism", "generic-card-wall", "stock-imagery", "gratuitous-gradients", "ornamental-motion", "decoration-without-meaning", "excessive-rounded-cards", "excessive-drop-shadows", "icon-only-meaning", "hidden-data-labels", "dense-navigation-chrome", "oversized-branding"] }
+    },
+    "formatAdaptation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "dashboard", "explainer"],
+      "properties": {
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["structure", "emphasis", "detail"],
+          "properties": {
+            "structure": { "enum": ["finding-evidence-decision", "executive-summary-analysis-appendix", "narrative-with-evidence", "question-answer-recommendation"] },
+            "emphasis": { "enum": ["one-dominant-conclusion", "balanced-findings", "decision-and-risks"] },
+            "detail": { "enum": ["method-and-caveats-visible", "progressive-detail", "compact-method-notes"] }
+          }
+        },
+        "dashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["structure", "emphasis", "detail"],
+          "properties": {
+            "structure": { "enum": ["decision-led-overview", "status-drivers-actions", "overview-trends-detail"] },
+            "emphasis": { "enum": ["few-prioritized-metrics", "exceptions-before-baseline", "trend-before-snapshot"] },
+            "detail": { "enum": ["values-before-chart-ornament", "labels-and-thresholds-visible", "compact-context-on-demand"] }
+          }
+        },
+        "explainer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["structure", "emphasis", "detail"],
+          "properties": {
+            "structure": { "enum": ["numbered-causal-sequence", "concept-example-application", "question-mechanism-takeaway"] },
+            "emphasis": { "enum": ["one-idea-per-step", "mechanism-before-detail", "examples-as-anchors"] },
+            "detail": { "enum": ["plain-language-mechanism", "definitions-next-to-use", "optional-technical-depth"] }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "paletteRole": { "enum": ["canvas", "surface", "ink", "muted", "emphasis", "attention", "comparison", "context"] }
+  }
+}

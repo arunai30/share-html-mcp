@@ -1,8 +1,36 @@
+import type { GenerateDiagramInput } from "./server.js";
+import type { PublicFontsInput } from "./fonts.js";
+import type {
+  GetTemplateInput,
+  ListTemplatesInput,
+  PreviewTemplateInput,
+  SaveTemplateInput,
+} from "./artifact-template.js";
+import { PageSourceError, assertSourceResponseFits } from "./source-handoff.js";
+import type {
+  ArtifactStyleRef,
+  GetArtifactStyleInput,
+  PreviewArtifactStyleInput,
+  SetArtifactStyleInput,
+} from "./artifact-style.js";
+
+export type ShareHtmlApiErrorDetails = {
+  requiredScopes?: string[];
+  reauthorizeUrl?: string;
+  currentRevision?: number;
+  currentVersion?: number;
+  retryAfterSeconds?: number;
+  limit?: number;
+  retryGuidance?: string;
+  retryWithIdenticalArguments?: boolean;
+};
+
 export class ShareHtmlApiError extends Error {
   constructor(
     public readonly code: string,
     message: string,
     public readonly status?: number,
+    public readonly details?: ShareHtmlApiErrorDetails,
   ) {
     super(message);
     this.name = "ShareHtmlApiError";
@@ -48,17 +76,20 @@ export type PageListInput = {
 
 export type PresentationPublishInput = {
   title?: string;
+  fonts?: PublicFontsInput;
   html: string;
   presentation: {
     schemaVersion: 1;
     aspectRatio: "16:9" | "4:3";
   };
   sharing?: InitialSharingPolicyInput;
+  styleRef?: ArtifactStyleRef;
 };
 
 type RequestOptions = {
   authenticated?: boolean;
   readOnlyRetryHint?: string;
+  retryDetails?: ShareHtmlApiErrorDetails;
 };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -84,11 +115,16 @@ function isTimeoutError(error: unknown) {
   );
 }
 
-function requestTimeoutError(readOnlyRetryHint?: string) {
+function requestTimeoutError(
+  readOnlyRetryHint?: string,
+  details?: ShareHtmlApiErrorDetails,
+) {
   if (readOnlyRetryHint) {
     return new ShareHtmlApiError(
       "request_timeout",
       `The share/artifacts request timed out. ${readOnlyRetryHint}`,
+      undefined,
+      details,
     );
   }
 
@@ -105,7 +141,104 @@ function safeClientMessage(message: string, token: string) {
     .slice(0, 500);
 }
 
-function readApiError(body: unknown) {
+function readSafeApiErrorDetails(
+  value: unknown,
+  token: string,
+): ShareHtmlApiErrorDetails | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  const details: ShareHtmlApiErrorDetails = {};
+
+  if (typeof source.currentVersion === "number"
+    && Number.isSafeInteger(source.currentVersion) && source.currentVersion > 0) {
+    details.currentVersion = source.currentVersion;
+  }
+
+  if (
+    Array.isArray(source.requiredScopes) &&
+    source.requiredScopes.length <= 10 &&
+    source.requiredScopes.every(
+      (scope) =>
+        scope === "styles:read" || scope === "styles:write",
+    )
+  ) {
+    details.requiredScopes = [...source.requiredScopes] as string[];
+  }
+
+  if (
+    typeof source.reauthorizeUrl === "string" &&
+    !source.reauthorizeUrl.includes(token)
+  ) {
+    const candidate = source.reauthorizeUrl;
+    let isSafeUrl = candidate.startsWith("/") && !candidate.startsWith("//");
+    try {
+      const parsed = new URL(candidate);
+      const isLoopback =
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "localhost" ||
+        parsed.hostname === "[::1]";
+      isSafeUrl =
+        !parsed.username &&
+        !parsed.password &&
+        (parsed.protocol === "https:" ||
+          (parsed.protocol === "http:" && isLoopback));
+    } catch {
+      // A same-origin path is already handled above.
+    }
+    if (
+      isSafeUrl &&
+      candidate.length <= 2_048 &&
+      !/[\u0000-\u001f\u007f-\u009f]/.test(candidate)
+    ) {
+      details.reauthorizeUrl = candidate;
+    }
+  }
+
+  if (
+    typeof source.currentRevision === "number" &&
+    Number.isSafeInteger(source.currentRevision) &&
+    source.currentRevision >= 0
+  ) {
+    details.currentRevision = source.currentRevision;
+  }
+
+  if (
+    typeof source.retryAfterSeconds === "number" &&
+    Number.isSafeInteger(source.retryAfterSeconds) &&
+    source.retryAfterSeconds > 0 &&
+    source.retryAfterSeconds <= 86_400
+  ) {
+    details.retryAfterSeconds = source.retryAfterSeconds;
+  }
+
+  if (
+    typeof source.limit === "number" &&
+    Number.isSafeInteger(source.limit) &&
+    source.limit > 0 &&
+    source.limit <= 10_000
+  ) {
+    details.limit = source.limit;
+  }
+
+  const retryGuidance =
+    typeof source.retryGuidance === "string"
+      ? source.retryGuidance
+      : typeof source.recovery === "string"
+        ? source.recovery
+        : null;
+  if (retryGuidance) {
+    details.retryGuidance = safeClientMessage(retryGuidance, token);
+  }
+  if (typeof source.retryWithIdenticalArguments === "boolean") {
+    details.retryWithIdenticalArguments = source.retryWithIdenticalArguments;
+  }
+
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function readApiError(body: unknown, token: string) {
   if (!body || typeof body !== "object" || !("error" in body)) return null;
   const error = body.error;
   if (!error || typeof error !== "object") return null;
@@ -120,7 +253,15 @@ function readApiError(body: unknown) {
     "message" in error && typeof error.message === "string"
       ? error.message
       : null;
-  return { code, message };
+  const detailsSource =
+    "details" in error && error.details && typeof error.details === "object"
+      ? error.details
+      : error;
+  return {
+    code,
+    message,
+    details: readSafeApiErrorDetails(detailsSource, token),
+  };
 }
 
 async function readBoundedResponseText(response: Response) {
@@ -233,12 +374,19 @@ export class ShareHtmlApiClient {
       });
     } catch (error) {
       if (isTimeoutError(error)) {
-        throw requestTimeoutError(options.readOnlyRetryHint);
+        throw requestTimeoutError(
+          options.readOnlyRetryHint,
+          options.retryDetails,
+        );
       }
 
       throw new ShareHtmlApiError(
         "network_error",
-        "Could not reach the share/artifacts API. Check the connection and try again.",
+        options.readOnlyRetryHint
+          ? `Could not reach the share/artifacts API. ${options.readOnlyRetryHint}`
+          : "Could not reach the share/artifacts API. Check the connection and try again.",
+        undefined,
+        options.retryDetails,
       );
     }
 
@@ -248,27 +396,41 @@ export class ShareHtmlApiClient {
     } catch (error) {
       if (error instanceof ShareHtmlApiError) throw error;
       if (isTimeoutError(error)) {
-        throw requestTimeoutError(options.readOnlyRetryHint);
+        throw requestTimeoutError(
+          options.readOnlyRetryHint,
+          options.retryDetails,
+        );
       }
       body = null;
     }
 
     if (!response.ok) {
-      const apiError = readApiError(body);
+      const apiError = readApiError(body, this.token);
       const isSafeClientError = response.status >= 400 && response.status < 500;
       const isSafeControlledPublishFailure =
         response.status === 500 && apiError?.code === "controlled_publish_failed";
+      const isSafeArtifactStyleIntegrityFailure =
+        response.status === 500 &&
+        apiError?.code === "artifact_style_persistence_integrity";
+      const isSafeFontProviderFailure =
+        (response.status === 502 || response.status === 503) && apiError?.code === "font_unavailable";
+      const isSafeApiError =
+        isSafeClientError ||
+        isSafeControlledPublishFailure ||
+        isSafeArtifactStyleIntegrityFailure ||
+        isSafeFontProviderFailure;
       const safeMessage =
-        (isSafeClientError || isSafeControlledPublishFailure) && apiError?.message
+        isSafeApiError && apiError?.message
           ? safeClientMessage(apiError.message, this.token)
           : `The share/artifacts API is unavailable (HTTP ${response.status}).`;
 
       throw new ShareHtmlApiError(
-        isSafeClientError || isSafeControlledPublishFailure
+        isSafeApiError
           ? (apiError?.code ?? "http_error")
           : "http_error",
         safeMessage,
         response.status,
+        apiError?.details,
       );
     }
 
@@ -337,17 +499,75 @@ export class ShareHtmlApiClient {
     );
   }
 
-  async getPage(pageId: string) {
-    return withArtifactDefaults(
-      await this.request(`/pages/${encodeURIComponent(pageId)}`),
-    ) as Record<string, unknown>;
+  async getPage(pageId: string, options?: { includeDiagramSource?: boolean; includeHtmlSource?: boolean }) {
+    const query = new URLSearchParams();
+    if (options?.includeDiagramSource) query.set("includeDiagramSource", "true");
+    if (options?.includeHtmlSource) query.set("includeHtmlSource", "true");
+    let response: Record<string, unknown>;
+    try {
+      response = await this.request(`/pages/${encodeURIComponent(pageId)}${query.size ? `?${query}` : ""}`);
+    } catch (error) {
+      if (options?.includeHtmlSource && error instanceof ShareHtmlApiError
+        && error.code === "invalid_response" && error.message === "The share/artifacts API response was too large.") {
+        throw new PageSourceError("source_too_large", "The complete source is too large for a safe handoff. Use your original local file or the manual editor; no source was truncated.");
+      }
+      throw error;
+    }
+    const value = withArtifactDefaults(response) as Record<string, unknown>;
+    if (options?.includeHtmlSource) assertSourceResponseFits(value);
+    return value;
+  }
+
+  generateDiagram(input: GenerateDiagramInput) {
+    return this.request("/diagrams", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, {
+      readOnlyRetryHint: "Retry generate_diagram only with the identical clientRequestId and arguments.",
+      retryDetails: { retryWithIdenticalArguments: true },
+    });
+  }
+
+  private async requireFontCapability() {
+    let capability: Record<string, unknown>;
+    try {
+      capability = await this.request("/fonts", { method: "GET" }, {
+        readOnlyRetryHint: "No publish or update was sent; it is safe to retry the font capability check.",
+      });
+    } catch (error) {
+      if (error instanceof ShareHtmlApiError) {
+        if (error.status === 404 || error.status === 405 || error.code === "invalid_response") {
+          throw new ShareHtmlApiError(
+            "unsupported_fonts",
+            "This server does not confirm support for fonts. No publish or update was sent. Update the server before retrying; do not remove fonts automatically.",
+            error.status,
+          );
+        }
+        if (error.code === "invalid_api_token" || error.code === "insufficient_scope") throw error;
+      }
+      throw new ShareHtmlApiError(
+        "font_capability_unavailable",
+        "Font support could not be checked. No publish or update was sent. Check the connection and retry; do not remove fonts automatically.",
+        error instanceof ShareHtmlApiError ? error.status : undefined,
+      );
+    }
+    if (capability.schemaVersion !== 1 || capability.provider !== "google-fonts") {
+      throw new ShareHtmlApiError(
+        "unsupported_fonts",
+        "This server does not confirm the supported font contract. No publish or update was sent. Update the server before retrying; do not remove fonts automatically.",
+      );
+    }
   }
 
   async publishPage(input: {
     title?: string;
-    html: string;
+    html?: string;
+    generationId?: string;
+    fonts?: PublicFontsInput;
     sharing?: InitialSharingPolicyInput;
+    styleRef?: ArtifactStyleRef;
   }) {
+    if (input.fonts !== undefined) await this.requireFontCapability();
     const controlled = input.sharing !== undefined;
     try {
       return await this.request(controlled ? "/pages/controlled" : "/pages", {
@@ -371,12 +591,24 @@ export class ShareHtmlApiClient {
   }
 
   async publishPresentation(input: PresentationPublishInput) {
+    if (input.fonts !== undefined) await this.requireFontCapability();
     try {
       return await this.request("/presentations", {
         method: "POST",
         body: JSON.stringify(input),
       });
     } catch (error) {
+      if (
+        input.styleRef !== undefined &&
+        error instanceof ShareHtmlApiError &&
+        error.status === 400 && error.code === "invalid_request"
+      ) {
+        throw new ShareHtmlApiError(
+          "unsupported_presentation_style_request",
+          "The server rejected this presentation style request. Nothing was published. Check the request; this capability may need a server update. Do not remove styleRef or fall back to generic HTML publishing automatically.",
+          error.status,
+        );
+      }
       if (
         error instanceof ShareHtmlApiError &&
         (error.status === 404 || error.status === 405)
@@ -391,7 +623,11 @@ export class ShareHtmlApiClient {
     }
   }
 
-  updatePage(pageId: string, input: { title?: string; html: string }) {
+  async updatePage(
+    pageId: string,
+    input: { title?: string; html?: string; generationId?: string; expectedVersion?: number; styleRef?: ArtifactStyleRef; fonts?: PublicFontsInput },
+  ) {
+    if (input.fonts !== undefined) await this.requireFontCapability();
     return this.request(
       `/pages/${encodeURIComponent(pageId)}`,
       {
@@ -442,6 +678,140 @@ export class ShareHtmlApiClient {
       method: "DELETE",
       body: JSON.stringify({ expectedRevision }),
     });
+  }
+
+  async previewArtifactStyle(input: PreviewArtifactStyleInput) {
+    try {
+      return await this.request(
+        "/artifact-style/preview",
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        },
+        {
+          readOnlyRetryHint:
+            "Nothing was activated. You may request another preview; any earlier private draft will expire automatically.",
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof ShareHtmlApiError &&
+        (error.status === 404 || error.status === 405)
+      ) {
+        throw new ShareHtmlApiError(
+          "unsupported_artifact_styles",
+          "This share/artifacts server does not support artifact style previews. Nothing was activated; upgrade the server and reconnect before trying again.",
+          error.status,
+        );
+      }
+      throw error;
+    }
+  }
+
+  async setArtifactStyle(input: SetArtifactStyleInput) {
+    const retryGuidance =
+      "Retry set_artifact_style only with the identical draftId, expectedRevision, and clientRequestId.";
+    try {
+      return await this.request(
+        "/artifact-style/activate",
+        {
+          method: "PUT",
+          body: JSON.stringify(input),
+        },
+        {
+          readOnlyRetryHint: retryGuidance,
+          retryDetails: {
+            retryGuidance,
+            retryWithIdenticalArguments: true,
+          },
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof ShareHtmlApiError &&
+        (error.status === 405 ||
+          (error.status === 404 &&
+            error.code !== "artifact_style_draft_not_found"))
+      ) {
+        throw new ShareHtmlApiError(
+          "unsupported_artifact_styles",
+          "This share/artifacts server does not support artifact style activation. Nothing was activated; upgrade the server and reconnect before trying again.",
+          error.status,
+        );
+      }
+      throw error;
+    }
+  }
+
+  listTemplates(input: ListTemplatesInput = {}) {
+    const query = new URLSearchParams();
+    if (input.query !== undefined) query.set("query", input.query);
+    if (input.limit !== undefined) query.set("limit", String(input.limit));
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    return this.request(`/templates${query.size ? `?${query}` : ""}`, undefined, {
+      readOnlyRetryHint: "It is safe to retry list_templates.",
+    });
+  }
+
+  getTemplate(input: GetTemplateInput) {
+    const query = input.includeHtml === true ? "?includeHtml=true" : "";
+    return this.request(`/templates/${encodeURIComponent(input.templateId)}${query}`, undefined, {
+      readOnlyRetryHint: "It is safe to retry get_template.",
+    });
+  }
+
+  previewTemplate(input: PreviewTemplateInput) {
+    return this.request("/templates/preview", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, {
+      readOnlyRetryHint: "A preview draft may already exist. Retrying creates another private draft and does not save or publish it.",
+    });
+  }
+
+  saveTemplate(input: SaveTemplateInput) {
+    return this.request("/templates/save", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, {
+      readOnlyRetryHint: "It is safe to retry save_template with the identical draftId.",
+      retryDetails: { retryWithIdenticalArguments: true },
+    });
+  }
+
+  async getArtifactStyle(input: GetArtifactStyleInput) {
+    try {
+      return await this.request(
+        `/artifact-style?format=${encodeURIComponent(input.format)}`,
+        undefined,
+        {
+          readOnlyRetryHint: "It is safe to retry get_artifact_style.",
+        },
+      );
+    } catch (error) {
+      if (
+        input.format === "presentation" &&
+        error instanceof ShareHtmlApiError &&
+        error.status === 400 && error.code === "invalid_artifact_style"
+      ) {
+        throw new ShareHtmlApiError(
+          "unsupported_presentation_style_request",
+          "The server rejected the presentation style request. Check the request; this capability may need a server update. The saved style is unchanged.",
+          error.status,
+        );
+      }
+      if (
+        error instanceof ShareHtmlApiError &&
+        (error.status === 404 || error.status === 405)
+      ) {
+        throw new ShareHtmlApiError(
+          "unsupported_artifact_styles",
+          "This share/artifacts server does not support artifact styles. Upgrade the server and reconnect your agent to grant style access.",
+          error.status,
+        );
+      }
+      throw error;
+    }
   }
 
 }

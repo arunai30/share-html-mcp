@@ -1,10 +1,12 @@
 {
   "name": "@aiformasses/mcp-server",
-  "version": "0.2.0",
-  "description": "Publish agent-created HTML artifacts through MCP.",
+  "version": "0.3.0",
+  "description": "Publish safe HTML artifacts and reuse an owner-authored style through MCP.",
   "keywords": [
     "ai-agents",
     "artifacts",
+    "branding",
+    "design-system",
     "html",
     "mcp",
     "model-context-protocol",
@@ -34,17 +36,36 @@
     "./client": {
       "types": "./dist/api-client.d.ts",
       "import": "./dist/api-client.js"
+    },
+    "./source-handoff": {
+      "types": "./dist/source-handoff.d.ts",
+      "import": "./dist/source-handoff.js"
+    },
+    "./artifact-template": {
+      "types": "./dist/artifact-template.d.ts",
+      "import": "./dist/artifact-template.js"
+    },
+    "./server-card.json": "./dist/server-card.json",
+    "./fonts": {
+      "types": "./dist/fonts.d.ts",
+      "import": "./dist/fonts.js"
     }
   },
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.json && node scripts/server-card.mjs",
+    "test:server-card": "node scripts/server-card.mjs --check",
     "prepack": "npm run build && node scripts/package-check.mjs",
     "test:release": "node scripts/release-check.mjs",
     "test:cli": "npm run build && node scripts/cli-config.mjs",
     "test:contract": "npm run build && node scripts/contract.mjs",
     "test:mock": "npm run build && node scripts/mock-integration.mjs",
-    "test:public": "npm run test:contract && npm run test:cli && npm run test:mock"
+    "test:public": "npm run test:contract && npm run test:cli && npm run test:mock && npm run test:diagrams && npm run test:source-handoff && npm run test:presentation-style && npm run test:templates && npm run test:fonts",
+    "test:templates": "npm run build && node scripts/artifact-template-contract.mjs",
+    "test:presentation-style": "npm run build && node scripts/presentation-style-contract.mjs",
+    "test:source-handoff": "npm run build && node scripts/source-handoff-contract.mjs",
+    "test:diagrams": "npm run build && node scripts/diagram-contract.mjs",
+    "test:fonts": "npm run build && node scripts/fonts-contract.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

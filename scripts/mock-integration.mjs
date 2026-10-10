@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { artifactStyleDefinition } from "./artifact-style-fixture.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageSpec = process.env.SHARE_HTML_TEST_MCP_PACKAGE_SPEC;
@@ -12,7 +13,14 @@ const packageCwd = process.env.SHARE_HTML_TEST_MCP_CWD;
 const token = "shp_mock_token_that_must_not_be_logged";
 let tokenActive = true;
 let page = null;
+let pageHtml = "";
 let sharing = null;
+let artifactStyleDraft = null;
+let artifactStyleProfile = { status: "not_configured", revision: 0 };
+let artifactStyleActivation = null;
+let templateDraft = null;
+let savedTemplate = null;
+const templateId = "00000000-0000-4000-8000-000000000001";
 const archivePages = Array.from({ length: 125 }, (_, index) => ({
   artifactType: "document",
   artifactSchemaVersion: 1,
@@ -67,6 +75,21 @@ function childEnvironment(extra = {}) {
 function sendJson(response, status, value) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
+}
+
+function sendLegacyStyleScopeError(response) {
+  sendJson(response, 403, {
+    error: {
+      code: "insufficient_scope",
+      message:
+        "This API token does not have styles:read access. Create a replacement token to continue.",
+      requiredScopes: ["styles:read"],
+      reauthorizeUrl: "https://app.example/settings/tokens",
+      recovery:
+        "Create a replacement personal token with the required scopes, update the agent locally, then revoke the old token.",
+      privateDiagnostic: "must not escape",
+    },
+  });
 }
 
 async function readJson(request) {
@@ -129,6 +152,113 @@ const api = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/v1/templates/preview") {
+    const input = await readJson(request);
+    assert.deepEqual(input, { name: "Board deck", description: "Monthly review", html: "<main>Example</main>", designNotes: "", format: "presentation", aspectRatio: "16:9" });
+    templateDraft = { draftId: templateId, name: input.name, description: input.description, status: "draft", reviewUrl: `https://app.example/templates/review/${templateId}` };
+    sendJson(response, 201, templateDraft);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/v1/templates/save") {
+    const input = await readJson(request);
+    assert.deepEqual(input, { draftId: templateId });
+    assert.ok(templateDraft);
+    savedTemplate ??= { templateId, name: templateDraft.name, description: templateDraft.description, format: "presentation", aspectRatio: "16:9", slideCount: 1, savedAt: "2026-09-30T12:00:00.000Z" };
+    sendJson(response, 200, { ...savedTemplate, status: "saved" });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/v1/templates") {
+    assert.equal(url.searchParams.get("limit"), "20");
+    sendJson(response, 200, { templates: savedTemplate ? [savedTemplate] : [], nextCursor: null });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === `/api/v1/templates/${templateId}`) {
+    if (!savedTemplate) {
+      sendJson(response, 404, { error: { code: "template_not_found", message: "Template not found." } });
+    } else {
+      sendJson(response, 200, { ...savedTemplate, designNotes: "", ...(url.searchParams.get("includeHtml") === "true" ? { html: "<main>Example</main>" } : {}) });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v1/artifact-style") {
+    const format = url.searchParams.get("format");
+    assert.ok(["report", "dashboard", "explainer", "presentation"].includes(format));
+    const { definition, ...identity } = artifactStyleProfile;
+    sendJson(
+      response,
+      200,
+      artifactStyleProfile.status === "configured"
+        ? {
+            ...(format === "presentation"
+              ? { ...identity, appearance: { composition: definition.composition } }
+              : artifactStyleProfile),
+            format,
+            guidance: `Format: ${format}\nUse asymmetric evidence-led composition.`,
+          }
+        : artifactStyleProfile,
+    );
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/api/v1/artifact-style/preview"
+  ) {
+    const input = await readJson(request);
+    assert.deepEqual(input.definition, artifactStyleDefinition);
+    artifactStyleDraft = {
+      status: "pending",
+      draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+      baseProfileRevision: artifactStyleProfile.revision,
+      definition: input.definition,
+      contentSha256: "e".repeat(64),
+      canonicalSummary: "Airy asymmetric layout with visible values.",
+      reviewUrl:
+        "https://app.example/settings/style?draft=1f5f93e1-d137-4a25-b067-65de57e7225c",
+      expiresAt: "2026-09-04T13:00:00.000Z",
+    };
+    sendJson(response, 201, artifactStyleDraft);
+    return;
+  }
+
+  if (
+    request.method === "PUT" &&
+    url.pathname === "/api/v1/artifact-style/activate"
+  ) {
+    const input = await readJson(request);
+    if (!artifactStyleDraft || input.draftId !== artifactStyleDraft.draftId) {
+      sendJson(response, 404, {
+        error: {
+          code: "artifact_style_draft_not_found",
+          message: "Artifact style draft was not found.",
+        },
+      });
+      return;
+    }
+    if (artifactStyleActivation) {
+      assert.deepEqual(input, artifactStyleActivation.input);
+      sendJson(response, 200, artifactStyleActivation.result);
+      return;
+    }
+    assert.deepEqual(input, {
+      draftId: artifactStyleDraft.draftId,
+      expectedRevision: artifactStyleDraft.baseProfileRevision,
+      clientRequestId: "mock-style-activation-1",
+    });
+    artifactStyleProfile = {
+      status: "configured",
+      revision: artifactStyleProfile.revision + 1,
+      styleVersionId: "497b866b-bc15-439b-a7eb-954fe0eab25b",
+      definition: artifactStyleDraft.definition,
+      contentSha256: artifactStyleDraft.contentSha256,
+      canonicalSummary: artifactStyleDraft.canonicalSummary,
+    };
+    artifactStyleActivation = { input, result: artifactStyleProfile };
+    sendJson(response, 200, artifactStyleProfile);
+    return;
+  }
+
   const pageMatch = url.pathname.match(/^\/api\/v1\/pages\/([^/]+)$/);
   const actionMatch = url.pathname.match(
     /^\/api\/v1\/pages\/([^/]+)\/(publish|unpublish)$/,
@@ -179,6 +309,11 @@ const api = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/v1/pages") {
     const input = await readJson(request);
+    if (input.title === "Legacy personal token") {
+      sendLegacyStyleScopeError(response);
+      return;
+    }
+    pageHtml = input.html;
     page = {
       artifactType: "document",
       artifactSchemaVersion: 1,
@@ -188,6 +323,8 @@ const api = createServer(async (request, response) => {
       status: "published",
       version: 1,
       publicUrl: "https://app.example/view/p_mock",
+      contentSha256: "c".repeat(64),
+      declaredStyleRef: input.styleRef ?? null,
       createdAt: "2026-08-27T12:00:00.000Z",
       updatedAt: "2026-08-27T12:00:00.000Z",
     };
@@ -207,6 +344,7 @@ const api = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/v1/presentations") {
     const input = await readJson(request);
+    pageHtml = input.html;
     assert.deepEqual(input.presentation, {
       schemaVersion: 1,
       aspectRatio: "16:9",
@@ -214,6 +352,7 @@ const api = createServer(async (request, response) => {
     page = {
       artifactSchemaVersion: 1,
       pageId: "p_mock_deck",
+      declaredStyleRef: input.styleRef ?? null,
       title: input.title ?? null,
       status: "published",
       version: 1,
@@ -246,6 +385,10 @@ const api = createServer(async (request, response) => {
     url.pathname === "/api/v1/pages/controlled"
   ) {
     const input = await readJson(request);
+    if (input.title === "Legacy personal token") {
+      sendLegacyStyleScopeError(response);
+      return;
+    }
     page = {
       artifactType: "document",
       artifactSchemaVersion: 1,
@@ -255,6 +398,8 @@ const api = createServer(async (request, response) => {
       status: "published",
       version: 1,
       publicUrl: "https://app.example/view/p_mock_controlled",
+      contentSha256: "c".repeat(64),
+      declaredStyleRef: input.styleRef ?? null,
       createdAt: "2026-08-27T12:00:00.000Z",
       updatedAt: "2026-08-27T12:00:00.000Z",
     };
@@ -274,15 +419,37 @@ const api = createServer(async (request, response) => {
 
   if (pageMatch && pageMatch[1] === page?.pageId) {
     if (request.method === "GET") {
-      sendJson(response, 200, page);
+      if (url.searchParams.get("includeHtmlSource") === "true" && page.artifactType !== "presentation") {
+        sendJson(response, 422, { error: { code: "html_source_unsupported", message: "HTML source handoff is supported only for presentations." } });
+        return;
+      }
+      sendJson(response, 200, {
+        ...page,
+        ...(url.searchParams.get("includeHtmlSource") === "true"
+          ? { htmlSource: { format: "sanitized-html", html: pageHtml } } : {}),
+      });
       return;
     }
     if (request.method === "PATCH") {
       const input = await readJson(request);
+      if (input.title === "Legacy personal token") {
+        sendLegacyStyleScopeError(response);
+        return;
+      }
+      if (input.expectedVersion !== undefined && input.expectedVersion !== page.version) {
+        sendJson(response, 409, { error: {
+          code: "page_version_conflict", message: "Get the current page and review it before retrying.",
+          details: { currentVersion: page.version, privateDiagnostic: "must not escape" },
+        } });
+        return;
+      }
+      pageHtml = input.html;
       page = {
         ...page,
         title: input.title ?? page.title,
         version: page.version + 1,
+        contentSha256: "d".repeat(64),
+        declaredStyleRef: input.styleRef ?? null,
       };
       sendJson(response, 200, page);
       return;
@@ -369,6 +536,11 @@ function value(result) {
   return result.structuredContent ?? JSON.parse(result.content[0].text);
 }
 
+function errorValue(result) {
+  assert.equal(result.isError, true);
+  return result.structuredContent ?? JSON.parse(result.content[0].text);
+}
+
 try {
   const transport = new StdioClientTransport({
     command: packageSpec ? "npx" : process.execPath,
@@ -384,23 +556,166 @@ try {
   });
   await client.connect(transport);
 
+  assert.equal(client.getServerVersion()?.version, "0.3.0");
+  const instructions = client.getInstructions() ?? "";
+  assert.match(instructions, /pm-decision-deck.*product manager.*otherwise.*presentation-deck/);
+  assert.match(instructions, /separate publication approval/);
+  assert.match(instructions, /"in my style"/i);
+  assert.match(instructions, /get_recipe and get_artifact_style.*before generating/i);
+  assert.match(instructions, /owner-authored appearance data/i);
+  assert.match(instructions, /source truth.*recipe structure.*Safe Static.*sharing/i);
+  assert.match(instructions, /declared provenance, not visual fidelity/i);
+  assert.match(instructions, /format "presentation" for decks/);
+  assert.match(instructions, /preserve its source styling.*do not automatically restyle/);
+  assert.match(instructions, /stale styleRef.*user decision.*never silently drop/);
+
   const tools = await client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name).sort(),
     [
       "delete_page",
       "end_current_viewing_sessions",
+      "generate_diagram",
+      "get_artifact_style",
       "get_page",
       "get_page_sharing",
       "get_recipe",
+      "get_template",
       "list_pages",
+      "list_templates",
+      "preview_artifact_style",
+      "preview_template",
       "publish_html",
       "publish_page",
       "publish_presentation",
+      "save_template",
+      "set_artifact_style",
       "set_page_sharing",
       "unpublish_page",
       "update_page",
     ],
+  );
+
+  assert.deepEqual(value(await client.callTool({ name: "list_templates", arguments: {} })), { templates: [], nextCursor: null });
+  const templatePreview = value(await client.callTool({ name: "preview_template", arguments: { name: "Board deck", description: "Monthly review", html: "<main>Example</main>" } }));
+  assert.equal(templatePreview.draftId, templateId);
+  assert.equal(templatePreview.html, undefined);
+  const templateSaved = value(await client.callTool({ name: "save_template", arguments: { draftId: templateId } }));
+  assert.equal(templateSaved.status, "saved");
+  assert.deepEqual(value(await client.callTool({ name: "save_template", arguments: { draftId: templateId } })), templateSaved);
+  const templateList = value(await client.callTool({ name: "list_templates", arguments: {} }));
+  assert.equal(templateList.templates.length, 1);
+  assert.equal(templateList.templates[0].html, undefined);
+  const templateMetadata = value(await client.callTool({ name: "get_template", arguments: { templateId } }));
+  assert.equal(templateMetadata.html, undefined);
+  const templateSource = value(await client.callTool({ name: "get_template", arguments: { templateId, includeHtml: true } }));
+  assert.equal(templateSource.html, "<main>Example</main>");
+  assert.equal(page, null, "Saving a template must not publish an artifact.");
+  assert.deepEqual(artifactStyleProfile, { status: "not_configured", revision: 0 });
+
+  const unconfiguredStyle = value(
+    await client.callTool({
+      name: "get_artifact_style",
+      arguments: { format: "report" },
+    }),
+  );
+  assert.deepEqual(unconfiguredStyle, { status: "not_configured", revision: 0 });
+
+  const stylePreview = value(
+    await client.callTool({
+      name: "preview_artifact_style",
+      arguments: { definition: artifactStyleDefinition },
+    }),
+  );
+  assert.equal(stylePreview.status, "pending");
+  assert.equal(stylePreview.baseProfileRevision, 0);
+  assert.match(stylePreview.draftId, /^[0-9a-f-]{36}$/);
+  assert.match(stylePreview.contentSha256, /^[a-f0-9]{64}$/);
+  assert.match(stylePreview.reviewUrl, /\/settings\/style\?draft=/);
+  assert.match(stylePreview.canonicalSummary, /asymmetric/i);
+  assert.equal("name" in stylePreview.definition, false);
+  assert.equal("summary" in stylePreview.definition, false);
+
+  const styleActivationInput = {
+    draftId: stylePreview.draftId,
+    expectedRevision: stylePreview.baseProfileRevision,
+    clientRequestId: "mock-style-activation-1",
+  };
+  const activatedStyle = value(
+    await client.callTool({
+      name: "set_artifact_style",
+      arguments: styleActivationInput,
+    }),
+  );
+  assert.equal(activatedStyle.status, "configured");
+  assert.equal(activatedStyle.revision, 1);
+  assert.equal(activatedStyle.contentSha256, stylePreview.contentSha256);
+  assert.equal("name" in activatedStyle.definition, false);
+  assert.equal("summary" in activatedStyle.definition, false);
+  const repeatedActivation = value(
+    await client.callTool({
+      name: "set_artifact_style",
+      arguments: styleActivationInput,
+    }),
+  );
+  assert.deepEqual(repeatedActivation, activatedStyle);
+
+  const configuredStyle = value(
+    await client.callTool({
+      name: "get_artifact_style",
+      arguments: { format: "dashboard" },
+    }),
+  );
+  assert.equal(configuredStyle.status, "configured");
+  assert.equal(configuredStyle.styleVersionId, activatedStyle.styleVersionId);
+  assert.match(configuredStyle.guidance, /Format: dashboard/);
+  assert.equal("name" in configuredStyle.definition, false);
+  assert.equal("summary" in configuredStyle.definition, false);
+  const activeStyleRef = {
+    styleVersionId: configuredStyle.styleVersionId,
+    revision: configuredStyle.revision,
+    contentSha256: configuredStyle.contentSha256,
+  };
+
+  const personalTokenStyleScopeError = {
+    code: "insufficient_scope",
+    message:
+      "This API token does not have styles:read access. Create a replacement token to continue.",
+    publicationState: "not_published",
+    details: {
+      requiredScopes: ["styles:read"],
+      reauthorizeUrl: "https://app.example/settings/tokens",
+      retryGuidance:
+        "Create a replacement personal token with the required scopes, update the agent locally, then revoke the old token.",
+    },
+  };
+  const legacyPublish = errorValue(
+    await client.callTool({
+      name: "publish_html",
+      arguments: {
+        title: "Legacy personal token",
+        html: "<h1>Styled report</h1>",
+        styleRef: activeStyleRef,
+      },
+    }),
+  );
+  assert.deepEqual(legacyPublish.error, personalTokenStyleScopeError);
+  assert.doesNotMatch(JSON.stringify(legacyPublish), /privateDiagnostic/);
+
+  const legacyControlledPublish = errorValue(
+    await client.callTool({
+      name: "publish_html",
+      arguments: {
+        title: "Legacy personal token",
+        html: "<h1>Styled private report</h1>",
+        sharing: { mode: "private" },
+        styleRef: activeStyleRef,
+      },
+    }),
+  );
+  assert.deepEqual(
+    legacyControlledPublish.error,
+    personalTokenStyleScopeError,
   );
 
   const catalog = value(
@@ -450,30 +765,75 @@ try {
   });
   assert.equal(invalidRecipeInput.isError, true);
 
+  const presentationStyle = value(await client.callTool({
+    name: "get_artifact_style", arguments: { format: "presentation" },
+  }));
+  assert.equal(presentationStyle.format, "presentation");
+  assert.equal(presentationStyle.definition, undefined);
+  assert.equal(presentationStyle.contentSha256, activeStyleRef.contentSha256);
   const presentation = value(
     await client.callTool({
       name: "publish_presentation",
       arguments: {
         title: "Mock deck",
         html: '<main class="share-presentation"></main>',
+        styleRef: activeStyleRef,
       },
     }),
   );
   assert.equal(presentation.artifactType, "presentation");
+  assert.deepEqual(presentation.declaredStyleRef, activeStyleRef);
   assert.equal(
     presentation.publicUrl,
     "https://app.example/view/p_mock_deck",
   );
   assert.equal(presentation.contentSha256.length, 64);
 
+  const editBase = value(await client.callTool({ name: "get_page", arguments: { pageId: presentation.pageId, includeHtmlSource: true } }));
+  assert.deepEqual(editBase.htmlSource, { format: "sanitized-html", html: '<main class="share-presentation"></main>' });
+  assert.equal(editBase.version, 1);
+  const reviewedHtml = '<main class="share-presentation"><section>Reviewed slide</section></main>';
+  const guardedUpdate = value(await client.callTool({ name: "update_page", arguments: { pageId: presentation.pageId, html: reviewedHtml, expectedVersion: editBase.version } }));
+  assert.equal(guardedUpdate.version, 2);
+  assert.equal(guardedUpdate.publicUrl, presentation.publicUrl);
+  const staleUpdate = errorValue(await client.callTool({ name: "update_page", arguments: { pageId: presentation.pageId, html: "<h1>Stale update</h1>", expectedVersion: editBase.version } }));
+  assert.equal(staleUpdate.error.code, "page_version_conflict");
+  assert.equal(staleUpdate.error.updateState, "not_updated");
+  assert.deepEqual(staleUpdate.error.details, { currentVersion: 2 });
+  assert.equal(value(await client.callTool({ name: "get_page", arguments: { pageId: presentation.pageId } })).htmlSource, undefined);
+  assert.equal(value(await client.callTool({ name: "get_page", arguments: { pageId: presentation.pageId, includeHtmlSource: true } })).htmlSource.html, reviewedHtml);
+
   const published = value(
     await client.callTool({
       name: "publish_html",
-      arguments: { title: "Mock report", html: "<h1>Mock report</h1>" },
+      arguments: {
+        title: "Mock report",
+        html: "<h1>Mock report</h1>",
+        styleRef: activeStyleRef,
+      },
     }),
   );
   assert.equal(published.pageId, "p_mock");
   assert.equal(published.version, 1);
+  assert.deepEqual(published.declaredStyleRef, activeStyleRef);
+
+  const legacyUpdate = errorValue(
+    await client.callTool({
+      name: "update_page",
+      arguments: {
+        pageId: published.pageId,
+        title: "Legacy personal token",
+        html: "<h1>Styled update</h1>",
+        styleRef: activeStyleRef,
+      },
+    }),
+  );
+  assert.deepEqual(legacyUpdate.error, {
+    code: personalTokenStyleScopeError.code,
+    message: personalTokenStyleScopeError.message,
+    updateState: "not_updated",
+    details: personalTokenStyleScopeError.details,
+  });
 
   const listed = value(await client.callTool({ name: "list_pages", arguments: {} }));
   assert.equal(listed.pages.length, 25);
@@ -517,7 +877,13 @@ try {
       arguments: { pageId: published.pageId, html: "<h1>Updated</h1>" },
     }),
   );
+  assert.equal(updated.pageId, published.pageId);
+  assert.equal(updated.publicUrl, published.publicUrl);
+  assert.notEqual(updated.contentSha256, published.contentSha256);
   assert.equal(updated.version, 2);
+  assert.equal(updated.declaredStyleRef, null);
+
+  assert.equal(errorValue(await client.callTool({ name: "get_page", arguments: { pageId: published.pageId, includeHtmlSource: true } })).error.code, "html_source_unsupported");
 
   const initialSharing = value(
     await client.callTool({
@@ -619,6 +985,7 @@ try {
           },
           expiresAt: "2027-01-01T00:00:00.000Z",
         },
+        styleRef: activeStyleRef,
       },
     }),
   );
@@ -627,6 +994,7 @@ try {
   assert.equal(controlled.sharing.emailDomain, "example.com");
   assert.equal(controlled.sharing.revision, 2);
   assert.deepEqual(controlled.sharing.recipients, ["reader@example.com"]);
+  assert.deepEqual(controlled.declaredStyleRef, activeStyleRef);
 
   tokenActive = false;
   const rejected = await client.callTool({ name: "list_pages", arguments: {} });
@@ -635,7 +1003,7 @@ try {
   assert.doesNotMatch(rejected.content?.[0]?.text ?? "", new RegExp(token));
 
   console.log(
-    "Public MCP integration passed: twelve tools, presentations, sharing parity, recipes, and safe auth failure.",
+    "Public MCP integration passed: twenty tools, private templates, styles, presentations, sharing parity, recipes, and safe auth failure.",
   );
 } finally {
   await client.close().catch(() => undefined);

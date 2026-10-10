@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import { registerShareHtmlTools } from '../dist/server.js';
+import { ShareHtmlApiClient } from '../dist/api-client.js';
+const tools = new Map();
+const calls = [];
+const operations = new Proxy({}, {get: (_, name) => async (...args) => { calls.push([name, ...args]); return { generationId: 'g_one' }; }});
+registerShareHtmlTools({registerTool: (name, definition, run) => tools.set(name, {definition,run})}, operations);
+const discovery = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../dist/server-card.json',import.meta.url),'utf8'));
+const diagramDiscovery = discovery.tools.find(tool=>tool.name==='generate_diagram');
+assert.match(diagramDiscovery.inputSchema.properties.spec.description,/schemaVersion:1/);
+assert.match(diagramDiscovery.inputSchema.properties.spec.description,/1-40 nodes/);
+assert.match(diagramDiscovery.inputSchema.properties.theme.description,/nodeWidth 200-320/);
+const input = {spec: {schemaVersion: 1, nodes: [], edges: []}, theme: {preset: 'paper'}, clientRequestId: 'request-one'};
+const generate = tools.get('generate_diagram');
+for (const preset of ['neutral', 'dark', 'paper']) assert.equal(generate.definition.inputSchema.safeParse({...input, theme:preset}).success,true);
+assert.equal(generate.definition.inputSchema.safeParse({...input,theme:'unknown'}).success,false);
+await generate.run(generate.definition.inputSchema.parse(input));
+assert.deepEqual(calls.pop(), ['generateDiagram',input]);
+assert.equal(generate.definition.inputSchema.safeParse({...input, html: '<script>'}).success, false);
+for (const name of ['publish_html','update_page']) {
+ const schema = tools.get(name).definition.inputSchema;
+ const base = name === 'update_page' ? {pageId:'p_one', expectedVersion: 2} : {};
+ assert.equal(schema.safeParse({...base,generationId:'g_one'}).success,true);
+ assert.equal(schema.safeParse({...base,html:'<h1>ok</h1>'}).success,true);
+ assert.equal(schema.safeParse({...base,html:'<h1>ok</h1>',generationId:'g_one'}).success,false);
+ assert.equal(schema.safeParse(base).success,false);
+}
+assert.equal(tools.get('update_page').definition.inputSchema.safeParse({pageId:'p_one',generationId:'g_one'}).success,false);
+assert.equal(tools.get('publish_presentation').definition.inputSchema.safeParse({html:'<h1>ok</h1>',generationId:'g_one'}).success,false);
+await tools.get('get_page').run({pageId:'p_one',includeDiagramSource:true});
+assert.deepEqual(calls.pop(),['getPage','p_one',{includeDiagramSource:true}]);
+const failing = new Map();
+registerShareHtmlTools({registerTool: (name, definition, run) => failing.set(name,run)}, {...operations,generateDiagram: async () => { throw Object.assign(new Error('Bad input'), {code:'invalid_diagram'}); }});
+const failure = await failing.get('generate_diagram')(input);
+assert.equal(failure.isError,true);
+assert.equal(failure.structuredContent.error.code,'invalid_diagram');
+const originalFetch=globalThis.fetch;
+const requests=[];
+globalThis.fetch=async (url,options) => { requests.push([url,options]); return Response.json({generationId:'g_one'}); };
+try {
+ const client=new ShareHtmlApiClient('https://example.test/api/v1','secret');
+ await client.generateDiagram(input);
+ assert.equal(requests.at(-1)[0],'https://example.test/api/v1/diagrams');
+ assert.deepEqual(JSON.parse(requests.at(-1)[1].body), input);
+ await client.publishPage({generationId:'g_one'});
+ assert.deepEqual(JSON.parse(requests.at(-1)[1].body), {generationId:'g_one'});
+ await client.updatePage('p_one',{generationId:'g_one',expectedVersion:2});
+ assert.deepEqual(JSON.parse(requests.at(-1)[1].body),{generationId:'g_one',expectedVersion:2});
+ await client.getPage('p_one',{includeDiagramSource:true});
+ assert.equal(requests.at(-1)[0],'https://example.test/api/v1/pages/p_one?includeDiagramSource=true');
+} finally {globalThis.fetch=originalFetch;}
+console.log('Diagram MCP contracts passed: generation, XOR publishing, version guards, opt-in source, error mapping and HTTP forwarding.');

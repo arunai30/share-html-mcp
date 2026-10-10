@@ -9,6 +9,7 @@ import {
   ShareHtmlApiClient,
   ShareHtmlApiError,
 } from "../dist/api-client.js";
+import { artifactStyleDefinition } from "./artifact-style-fixture.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const secret = "shp_test_secret_that_must_not_be_logged";
@@ -56,7 +57,7 @@ assert.throws(
   /timeoutMs/,
 );
 
-const fixture = createServer((request, response) => {
+const fixture = createServer(async (request, response) => {
   response.setHeader("content-type", "application/json");
   if (request.url === "/success/pages") {
     response.end(JSON.stringify({ pages: [], pageInfo: { nextCursor: null } }));
@@ -98,6 +99,65 @@ const fixture = createServer((request, response) => {
         error: {
           code: "invalid_recipe_request",
           message: "version requires a recipeId.",
+        },
+      }),
+    );
+    return;
+  }
+  if (request.url === "/success/artifact-style?format=explainer") {
+    assert.equal(request.method, "GET");
+    response.end(
+      JSON.stringify({
+        status: "configured",
+        revision: 2,
+        format: "explainer",
+        guidance: "Format: explainer",
+      }),
+    );
+    return;
+  }
+  if (request.url === "/success/artifact-style/preview") {
+    assert.equal(request.method, "POST");
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    assert.deepEqual(JSON.parse(body), { definition: artifactStyleDefinition });
+    response.statusCode = 201;
+    response.end(
+      JSON.stringify({
+        status: "pending",
+        draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+        baseProfileRevision: 2,
+      }),
+    );
+    return;
+  }
+  if (request.url === "/success/artifact-style/activate") {
+    assert.equal(request.method, "PUT");
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const input = JSON.parse(body);
+    assert.deepEqual(input, {
+      draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+      expectedRevision: 2,
+      clientRequestId: "cli-style-activation-1",
+    });
+    response.end(JSON.stringify({ status: "configured", revision: 3 }));
+    return;
+  }
+  if (request.url === "/style-timeout/artifact-style/activate") {
+    setTimeout(
+      () => response.end(JSON.stringify({ status: "configured", revision: 3 })),
+      100,
+    );
+    return;
+  }
+  if (request.url === "/style-integrity/artifact-style?format=report") {
+    response.statusCode = 500;
+    response.end(
+      JSON.stringify({
+        error: {
+          code: "artifact_style_persistence_integrity",
+          message: "Stored artifact style data failed integrity validation.",
         },
       }),
     );
@@ -182,6 +242,69 @@ try {
   assert.deepEqual(
     await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).listPages(),
     { pages: [], pageInfo: { nextCursor: null } },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).getArtifactStyle({
+      format: "explainer",
+    }),
+    {
+      status: "configured",
+      revision: 2,
+      format: "explainer",
+      guidance: "Format: explainer",
+    },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).previewArtifactStyle({
+      definition: artifactStyleDefinition,
+    }),
+    {
+      status: "pending",
+      draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+      baseProfileRevision: 2,
+    },
+  );
+  assert.deepEqual(
+    await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).setArtifactStyle({
+      draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+      expectedRevision: 2,
+      clientRequestId: "cli-style-activation-1",
+    }),
+    { status: "configured", revision: 3 },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/style-timeout`, secret, {
+      timeoutMs: 10,
+    }).setArtifactStyle({
+      draftId: "1f5f93e1-d137-4a25-b067-65de57e7225c",
+      expectedRevision: 2,
+      clientRequestId: "cli-style-timeout-1",
+    }),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "request_timeout");
+      assert.match(error.message, /identical.*draftId.*expectedRevision.*clientRequestId/i);
+      assert.deepEqual(error.details, {
+        retryGuidance:
+          "Retry set_artifact_style only with the identical draftId, expectedRevision, and clientRequestId.",
+        retryWithIdenticalArguments: true,
+      });
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    new ShareHtmlApiClient(`${fixtureOrigin}/style-integrity`, secret).getArtifactStyle({
+      format: "report",
+    }),
+    (error) => {
+      assert.ok(error instanceof ShareHtmlApiError);
+      assert.equal(error.code, "artifact_style_persistence_integrity");
+      assert.equal(error.status, 500);
+      assert.match(error.message, /integrity validation/i);
+      return true;
+    },
   );
   assert.deepEqual(
     await new ShareHtmlApiClient(`${fixtureOrigin}/success`, secret).listPages({
@@ -356,5 +479,5 @@ await assert.rejects(
 );
 
 console.log(
-  "MCP CLI check passed: configuration, HTTPS, timeout, redaction, and safe API errors.",
+  "MCP CLI check passed: configuration, HTTPS, style routes, idempotent timeout guidance, redaction, and safe API errors.",
 );

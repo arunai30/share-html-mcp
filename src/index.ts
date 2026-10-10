@@ -16,6 +16,6 @@ if (!token || !baseUrl) {
 }
 
 const client = new ShareHtmlApiClient(baseUrl, token);
-const server = createShareHtmlServer(client, client);
+const server = createShareHtmlServer(client, client, client, client);
 const transport = new StdioServerTransport();
 await server.connect(transport);
